@@ -1,0 +1,309 @@
+;; The first three lines of this file were inserted by DrRacket. They record metadata
+;; about the language level of this file in a form that our tools can easily process.
+#reader(lib "htdp-intermediate-lambda-reader.ss" "lang")((modname gamev2) (read-case-sensitive #t) (teachpacks ()) (htdp-settings #(#t constructor repeating-decimal #f #t none #f () #f)))
+(require 2htdp/image)
+(require 2htdp/universe)
+
+; A People-World is
+; (make-pw [List-of Posn] Posn [List-of Posn] [List-of Posn] Natural Natural Natural)
+; interp: if 'a-pw' is a People-World then all of:
+; - (pw-helicopter a-pw) is the direction that the helicopter will be moving
+;    when dropping the people
+; - (pw-people a-pw) is a list of the positions of the people falling
+; - (pw-canon a-pw) is the posn of the coordinate
+; - (pw-ball a-pw) the list of posns of the ball
+; - (pw-score a-pw) is the score
+; - (pw-count a-pw) is the number of people that have fallen beyond reach, game
+;    over when the number is 3, resets to 0 when a new level is reached
+; - (pw-level a-pw) is the current level that the player is on
+(define-struct pw (helicopter people canon ball score count level counter))
+
+; A People is (make-people [List-of Posn])
+; interp: if 'a-people' is a People then all of:
+; - (posn-x a-people) is a Posn X,
+; - (posn-y a-people) is a Posn Y
+(define-struct people (posn))
+
+; A Helicopter is (make-helicopter [List-of Posn])
+; interp: if 'a-helicopter' is a Helicopter then all of:
+; - (posn-x a-helicopter) is a Posn X,
+; - (posn-y a-helicopter) is a Posn Y
+(define-struct helicopter (posn))
+
+; A Canon is (make-canon (Posn))
+; interp: if 'a-canon' is a Helicopter then all of:
+; - (posn-x a-canon) is a Posn X,
+; - (posn-y a-canon) is a Posn Y
+(define-struct canon (posn))
+
+; A Ball is (make-ball [List-of Posn])
+; interp: if 'a-ball' is a Helicopter then all of:
+; - (posn-x a-ball) is a Posn X,
+; - (posn-y a-ball) is a Posn Y
+(define-struct ball (posn))
+
+; A Posn is (make-posn Real Real)
+(define SPEED 10)
+(define WORLD-WIDTH 400)
+(define WORLD-HEIGHT 400) 
+(define MAX-HELICOPTER 5)
+(define MAX-PEOPLE 5)
+(define MAX-BALL 100)
+(define BOTTOM 380)
+(define RIGHT 400)
+(define BACKGROUND (empty-scene WORLD-WIDTH WORLD-HEIGHT))
+(define BALL-IMAGE (scale/xy  0.15 0.15 (bitmap/file "ball.jpg")))
+(define BALL (overlay BALL-IMAGE (circle 15 "solid" "white")))
+ 
+(define PERSON (scale/xy 0.075 0.075 (bitmap/file "person.png")))
+(define CANON-IMAGE (scale/xy 0.1 0.1 (bitmap/file "canon.jpg")))
+(define PEOPLE-IMAGE (overlay PERSON (circle 20 "solid" "white"))) 
+(define HELICOPTER (scale/xy 0.05 0.05 (bitmap/file "helicopter.jpg")))
+(define INITIAL (make-pw (list (make-posn 79 12) (make-posn 159 12)
+                               (make-posn 239 12) (make-posn 319 12)
+                               (make-posn 379 12)) '() (make-posn 30 370) '() 0 0 0 0))
+
+
+ 
+; tick : People-world -> People-world
+; to get a new People-world on every tick
+(define (tick a-pw)
+  (make-pw (maybe-add-helicopter (update-helicopter (pw-helicopter a-pw)) (pw-counter a-pw))
+           (maybe-add-people (update-people (pw-people a-pw)) (pw-helicopter a-pw) (pw-counter a-pw))
+           (pw-canon a-pw)
+           (release-ball  (canon-direction (pw-ball a-pw) (pw-canon a-pw)) (pw-canon a-pw) (pw-counter a-pw))
+           (update-score a-pw)
+           0 0
+           (add1 (pw-counter a-pw))))
+
+; canon-direction ; [List-of Posn] [List-of Posn] -> Boolean
+; to determine which half the canon is pointing in 
+(define (canon-direction ball canon)
+  (cond
+    [(empty? ball) '()]
+    [else (if (and (<= (posn-y (first ball)) 370) (or (<= (posn-x (first ball)) 400) (>= (posn-x(first ball)) -220)))
+                (local
+                  [(define radian (atan (- (posn-y (first ball)) 399.5) (- (posn-x (first ball)) 199.5)))]                  
+                  (cons (make-posn (+ (posn-x (first ball)) (* SPEED (cos radian)))
+                                   (+ (posn-y (first ball)) (* SPEED (sin radian))))
+                        (canon-direction (rest ball) canon)))
+              (canon-direction (rest ball) canon))]))
+
+
+; release-ball : [List-of Posn][List-of Posn] Number -> [List-of Posn]
+; releases a ball based on timer and maximum balls
+(define (release-ball ball canon counter)
+  (cond
+    [(< (length ball) MAX-BALL)
+     (cond
+       [(zero? (remainder counter 20)) (cons (make-posn (posn-x canon) (posn-y canon)) ball)]
+       [else ball])]
+    [else ball]))
+
+; maybe-add-people : [List-of Posn][List-of Posn] Number -> [List-of Posn]
+; releases a person based on timer and maximum people
+(define (maybe-add-people people helicopter counter)
+  (cond
+    [(empty? helicopter) '()]
+    [else (cond
+            [(and (< (length people) MAX-PEOPLE) (zero? (remainder counter 80)))
+              (cons (make-posn (posn-x (first helicopter)) 0)(rest helicopter))]
+            [else people])]))
+
+; maybe-add-helicopter : [List-of Posn][List-of Posn] Number -> [List-of Posn]
+; releases a helicopter based on timer and maximum helicopter
+(define (maybe-add-helicopter helicopter counter)
+  (cond
+    [(< (length helicopter) MAX-HELICOPTER) 
+     (cond
+       [(zero? (remainder counter 80)) (cons (make-posn 0 12) helicopter)]
+       [else helicopter])]
+    [else helicopter]))
+
+; update-helicopter : [List-of Posn] -> [List-of Posn]
+; moves the object
+(define (update-helicopter loh)
+  (cond
+    [(empty? loh) '()]
+    [else (if (<= (posn-x (first loh)) RIGHT)
+                  (cons (make-posn (add1 (posn-x (first loh)))
+                                   (posn-y (first loh)))
+                        (update-helicopter (rest loh)))
+                  (update-helicopter (rest loh)))]))
+
+; update-people : [List-of Posn] -> [List-of Posn]
+; moves the object
+(define (update-people lop)
+  (cond
+    [(empty? lop) '()]
+    [else (if (<= (posn-y (first lop)) BOTTOM)
+                  (cons (make-posn (posn-x (first lop))
+                                   (add1 (posn-y (first lop))))
+                        (update-people (rest lop)))
+                  (update-people (rest lop)))]))
+
+; key : People-world Key-event -> People-world
+; returns a different People-world based on the following key events
+; - on key-event left arrow moves the canon ray direction to the left
+; - on key-event right arrow moves the canon ray direction to the right
+(define (key a-pw a-key)
+  (cond
+    [(key=? a-key "right") (right-canon a-pw)]
+    [(key=? a-key "left") (left-canon a-pw)]))
+
+; right-canon : People-world -> People-World
+; moves the canon
+(define (right-canon a-pw)
+  (if (and (< (posn-x (pw-canon a-pw)) 371) (< (posn-y (pw-canon a-pw)) 371))
+  (cond
+    [(equal? (posn-x (pw-canon a-pw)) (posn-y (pw-canon a-pw)))
+             (make-pw
+              (pw-helicopter a-pw)
+              (pw-people a-pw)
+              (make-posn (+ 10 (posn-x (pw-canon a-pw))) (+ (posn-y (pw-canon a-pw)) 10 ))
+              (pw-ball a-pw)
+              (pw-score a-pw)
+              0 0
+              (pw-counter a-pw))]
+    [else
+      (make-pw
+       (pw-helicopter a-pw)
+       (pw-people a-pw)
+       (make-posn (+ 10 (posn-x (pw-canon a-pw))) (- (posn-y (pw-canon a-pw)) 10 ))
+       (pw-ball a-pw)
+       (pw-score a-pw)
+       0 0
+       (pw-counter a-pw))])
+  (make-pw (pw-helicopter a-pw) (pw-people a-pw) (make-posn 370 370) (pw-ball a-pw) (pw-score a-pw) 0 0 (pw-counter a-pw))))
+
+; left-canon : People-world -> People-World
+; moves the canon
+(define (left-canon a-pw)
+  (if (and (> (posn-x (pw-canon a-pw)) 31) (< (posn-y (pw-canon a-pw)) 371))
+  (cond
+    [(and (equal? (posn-x (pw-canon a-pw)) (posn-y (pw-canon a-pw))) (> (posn-x (pw-canon a-pw)) 195) (> (posn-y (pw-canon a-pw)) 195))
+             (make-pw
+              (pw-helicopter a-pw)
+              (pw-people a-pw)
+              (make-posn (- (posn-x (pw-canon a-pw)) 10) (- (posn-y (pw-canon a-pw)) 10 ))
+              (pw-ball a-pw)
+              (pw-score a-pw)
+              0 0
+              (pw-counter a-pw))]
+    [else
+      (make-pw
+       (pw-helicopter a-pw)
+       (pw-people a-pw)
+       (make-posn (- (posn-x (pw-canon a-pw)) 10) (+ (posn-y (pw-canon a-pw)) 10 ))
+       (pw-ball a-pw)
+       (pw-score a-pw)
+       0 0
+       (pw-counter a-pw))])
+  (make-pw (pw-helicopter a-pw) (pw-people a-pw) (make-posn 30 370) (pw-ball a-pw) (pw-score a-pw) 0 0 (pw-counter a-pw)))) 
+
+; update-score : People-world -> Natural
+; gets the new score
+(define (update-score a-pw)
+  (cond
+    [(or (empty? (pw-ball a-pw)) (empty?(pw-people a-pw))) (pw-score a-pw)]
+    [else
+     (+ (* 10 (count-collision-ball (first (pw-ball a-pw)) (pw-people a-pw)))
+     (* 10 (count-collision-people (pw-ball a-pw) (first (pw-people a-pw))))
+     (pw-score a-pw))]))
+
+; count-collision-ball : [List-of Posn] [List-of Posn] -> Number
+; counts the number of collisions made by the balls
+(define (count-collision-ball ball people)
+  (cond
+    [(empty? people) 0]
+    [else (if (person-collide-ball ball (first people))
+              1
+              (count-collision-ball ball (rest people)))]))
+
+; count-collision-people : [List-of Posn] [List-of Posn] -> Number
+; counts the number of collisions made by the people
+(define (count-collision-people ball people)
+  (cond
+    [(empty? ball) 0]
+    [else (if (person-collide-ball (first ball) people)
+              1
+              (count-collision-people (rest ball) people))]))
+
+; person-collide-ball : [List-of Posn] [List-of Posn] -> Boolean
+; checks to see if the person and ball collide
+(define (person-collide-ball people ball)
+  (<= (+ (sqr (- (posn-x ball) (posn-x people))) (sqr (- (posn-y ball) (posn-y people)))) 400))
+ 
+; draw : People-world -> Scene
+; renders the helicopter people, canon, ball and score as a scene
+(define (draw a-pw)
+  (place-image (text (number->string (pw-score a-pw)) 24 "black")
+               20
+               380
+               (draw-balls (pw-ball a-pw)
+                           (draw-helicopters (pw-helicopter a-pw)
+                                             (draw-peoples (pw-people a-pw)
+                                                           (draw-canon (pw-canon a-pw) BACKGROUND))))))
+; draw-canon : Posn People-world -> People-world
+; to place the object in the world
+(define (draw-canon canon scene)
+  (place-objects CANON-IMAGE
+                 (make-posn 200 370)
+                 (add-line BACKGROUND 200 400 (posn-x canon) (posn-y canon) "black")))
+  
+; draw-helicopters : Posn People-world -> People-world
+; to apply the function to every helicopter in the list
+(define (draw-helicopters helicopter scene)
+  (foldr draw-helicopter scene helicopter))
+
+
+; draw-helicopter : Posn People-world -> People-world
+; to place the object in the world
+(define (draw-helicopter helicopter scene)
+  (place-objects HELICOPTER
+                 helicopter
+                 scene))
+
+; draw-balls : Posn People-world -> People-world
+; to apply the function to every ball in the list
+(define (draw-balls ball scene)
+  (foldr draw-ball scene ball))
+
+; draw-ball : Posn People-world -> People-world
+; to place the object in the world
+(define (draw-ball ball scene)
+  (place-objects BALL
+                 ball
+                 scene))
+
+; draw-peoples : Posn People-world -> People-world
+; to apply the function to every people in the list
+(define (draw-peoples people scene)
+  (foldr draw-people scene people))
+
+; draw-people : Posn People-world -> People-world
+; to place the object in the world
+(define (draw-people people scene)
+  (place-objects PEOPLE-IMAGE
+                people
+                scene))
+
+; place-objects : Image [Posn] People-world -> People-world
+; place-image function 
+(define (place-objects image object scene)
+  (place-image image
+               (posn-x object)
+               (posn-y object)
+               scene))
+
+; start : Any -> People-world
+; starts the targeting game
+(define (start _dummy)
+  (big-bang INITIAL
+    [on-tick tick 1/10]
+    [on-key key]
+    [to-draw draw]))
+
+(start 0)
+
+
